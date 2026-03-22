@@ -1,6 +1,6 @@
 <h1 align="center">Git History Reset</h1>
 
-Reset a repository history into a single fresh commit, with backup, GitHub repo selection, and optional push.
+<p align="center">Reset a repository history into a single fresh commit, with backup, GitHub repo selection, and optional push.</p>
 
 Works on **Windows** and **Linux**.
 Use it when you want to:
