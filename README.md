@@ -1,4 +1,4 @@
-<h1 align="center">Git History Reset</h1>
+<h1 align="center">Git History Reset 🔁</h1>
 
 <p align="center">Reset a repository history into a single fresh commit, with backup, GitHub repo selection, and optional push.</p>
 
