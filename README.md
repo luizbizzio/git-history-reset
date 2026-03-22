@@ -10,7 +10,7 @@ Use it when you want to:
 - keep the current files, but remove old commits
 - do it with a safer flow, not with random Git commands
 
-## Features
+## Features 📊
 
 - Lists your GitHub repositories with `gh`
 - Works with public and private repositories
