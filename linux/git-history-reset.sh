@@ -12,6 +12,10 @@ UNINSTALL=0
 YES=0
 DRY_RUN=0
 PUSH_FORCE=0
+NO_PUSH=0
+KEEP_CLONE=0
+NO_BACKUP=0
+FULL_HISTORY_BACKUP=0
 SIGN=0
 NO_SIGN=0
 REMOVE_CLONE_ON_SUCCESS=0
@@ -699,6 +703,18 @@ parse_args() {
       --push-force)
         PUSH_FORCE=1
         ;;
+      --no-push)
+        NO_PUSH=1
+        ;;
+      --keep-clone)
+        KEEP_CLONE=1
+        ;;
+      --no-backup)
+        NO_BACKUP=1
+        ;;
+      --full-history-backup)
+        FULL_HISTORY_BACKUP=1
+        ;;
       --sign)
         SIGN=1
         ;;
@@ -740,10 +756,14 @@ Usage: git-history-reset.sh [options]
   --uninstall
   --yes
   --dry-run
-  --push-force
+  --no-push
+  --keep-clone
+  --no-backup
+  --full-history-backup
+  --push-force                 Compatibility option. Push is automatic by default.
+  --remove-clone-on-success    Compatibility option. Cleanup is automatic by default after push.
   --sign
   --no-sign
-  --remove-clone-on-success
   --workspace-root <path>
   --install-root <path>
   --bin-root <path>
@@ -771,6 +791,10 @@ main() {
   fi
   if [ "$SIGN" -eq 1 ] && [ "$NO_SIGN" -eq 1 ]; then
     write_error_line "Use either --sign or --no-sign, not both."
+    exit 1
+  fi
+  if [ "$NO_BACKUP" -eq 1 ] && [ "$FULL_HISTORY_BACKUP" -eq 1 ]; then
+    write_error_line "Use either --no-backup or --full-history-backup, not both."
     exit 1
   fi
 
@@ -900,14 +924,39 @@ main() {
 
   local timestamp
   timestamp="$(date '+%Y%m%d-%H%M%S')"
-  local workspace_root_full clones_root backups_root clone_folder_name clone_path bundle_path meta_path
+  local workspace_root_full clones_root backups_root clone_folder_name clone_path bundle_path snapshot_path meta_path
   workspace_root_full="$(mkdir -p "$WORKSPACE_ROOT" && cd "$WORKSPACE_ROOT" && pwd -P)"
   clones_root="$workspace_root_full/clones"
   backups_root="$workspace_root_full/backups"
   clone_folder_name="$(printf '%s' "$full_name" | sed 's/[^a-zA-Z0-9._-]/-/g')-$timestamp"
   clone_path="$clones_root/$clone_folder_name"
   bundle_path="$backups_root/$clone_folder_name.bundle"
+  snapshot_path="$backups_root/$clone_folder_name.zip"
   meta_path="$backups_root/$clone_folder_name.txt"
+
+  local clone_mode backup_display push_display cleanup_display
+  if [ "$FULL_HISTORY_BACKUP" -eq 1 ]; then
+    clone_mode='full history clone'
+  else
+    clone_mode='shallow snapshot clone'
+  fi
+  if [ "$NO_BACKUP" -eq 1 ]; then
+    backup_display='no'
+  elif [ "$FULL_HISTORY_BACKUP" -eq 1 ]; then
+    backup_display="$bundle_path"
+  else
+    backup_display="$snapshot_path"
+  fi
+  if [ "$NO_PUSH" -eq 1 ]; then
+    push_display='no'
+  else
+    push_display='yes (automatic)'
+  fi
+  if [ "$KEEP_CLONE" -eq 1 ] || [ "$NO_PUSH" -eq 1 ]; then
+    cleanup_display='no'
+  else
+    cleanup_display='yes after successful push'
+  fi
 
   write_section "Plan"
   write_info_line 'Repository' "$full_name"
@@ -916,14 +965,16 @@ main() {
   write_info_line 'Default branch' "$default_branch"
   write_info_line 'Remote' "$clone_url"
   write_info_line 'Clone path' "$clone_path"
-  write_info_line 'Backup' "$bundle_path"
+  write_info_line 'Clone mode' "$clone_mode"
+  write_info_line 'Backup' "$backup_display"
   write_info_line 'Commit message' "$MESSAGE"
   write_info_line 'Dry run' "$( [ "$DRY_RUN" -eq 1 ] && printf 'yes' || printf 'no' )"
-  write_info_line 'Push after reset' "$( [ "$PUSH_FORCE" -eq 1 ] && printf 'yes (automatic)' || printf 'ask for YES' )"
-  write_info_line 'Cleanup clone' "$( [ "$REMOVE_CLONE_ON_SUCCESS" -eq 1 ] && printf 'yes' || printf 'no' )"
+  write_info_line 'Push after reset' "$push_display"
+  write_info_line 'Cleanup clone' "$cleanup_display"
 
   printf '\n'
-  write_warn_line "This script clones the selected repository into a dedicated workspace, rewrites its Git history into a single new commit, and can optionally push the rewritten history back to GitHub."
+  write_warn_line "This script clones the selected repository into a dedicated workspace, rewrites its Git history into a single new commit, and pushes the rewritten history back to GitHub by default."
+  write_warn_line "By default it uses a shallow snapshot clone, so old deleted files from Git history are not downloaded."
   write_warn_line "GitHub issues, pull requests, releases, and other platform data are not deleted by this script."
 
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -935,7 +986,9 @@ main() {
     printf '\n'
     local confirmation
     read -r -p 'Type RESET to continue: ' confirmation
-    if [ "$(upper="$(printf '%s' "$confirmation" | tr '[:lower:]' '[:upper:]')"; printf '%s' "$upper")" != 'RESET' ]; then
+    local confirmation_value
+    confirmation_value="$(printf '%s' "$confirmation" | tr '[:lower:]' '[:upper:]')"
+    if [ "$confirmation_value" != 'RESET' ]; then
       write_error_line "Operation cancelled."
       exit 1
     fi
@@ -946,26 +999,48 @@ main() {
   rm -rf "$clone_path"
 
   write_section "Cloning repository"
-  with_git_prompt_disabled gh repo clone "$full_name" "$clone_path"
+  if [ "$FULL_HISTORY_BACKUP" -eq 1 ]; then
+    with_git_prompt_disabled gh repo clone "$full_name" "$clone_path"
+  else
+    local -a clone_cmd
+    clone_cmd=(git clone --depth 1 --single-branch)
+    if [ -n "$default_branch" ] && [ "$default_branch" != '-' ]; then
+      clone_cmd+=(--branch "$default_branch")
+    fi
+    clone_cmd+=("$clone_url" "$clone_path")
+    with_git_prompt_disabled "${clone_cmd[@]}"
+  fi
   write_success_line "Clone completed."
 
   cd "$clone_path"
 
-  write_section "Creating backup"
-  local head_before
-  head_before="$(git rev-parse HEAD 2>/dev/null || true)"
-  git bundle create "$bundle_path" --all >/dev/null
-  {
-    printf 'repo_name=%s\n' "$repo_name"
-    printf 'full_name=%s\n' "$full_name"
-    printf 'default_branch=%s\n' "$default_branch"
-    printf 'remote_url=%s\n' "$clone_url"
-    printf 'old_head=%s\n' "$head_before"
-    printf 'created_at=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-  } > "$meta_path"
-  write_success_line "Backup created."
-  write_info_line 'Bundle' "$bundle_path"
-  write_info_line 'Metadata' "$meta_path"
+  if [ "$NO_BACKUP" -eq 1 ]; then
+    write_section "Creating backup"
+    write_warn_line "Backup skipped."
+  else
+    write_section "Creating backup"
+    local head_before
+    head_before="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [ "$FULL_HISTORY_BACKUP" -eq 1 ]; then
+      git bundle create "$bundle_path" --all >/dev/null
+      write_success_line "Full history backup created."
+      write_info_line 'Bundle' "$bundle_path"
+    else
+      git archive --format=zip --output="$snapshot_path" HEAD
+      write_success_line "Snapshot backup created."
+      write_info_line 'Snapshot' "$snapshot_path"
+    fi
+    {
+      printf 'repo_name=%s\n' "$repo_name"
+      printf 'full_name=%s\n' "$full_name"
+      printf 'default_branch=%s\n' "$default_branch"
+      printf 'remote_url=%s\n' "$clone_url"
+      printf 'old_head=%s\n' "$head_before"
+      printf 'backup_type=%s\n' "$( [ "$FULL_HISTORY_BACKUP" -eq 1 ] && printf 'full-history-bundle' || printf 'snapshot-zip' )"
+      printf 'created_at=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+    } > "$meta_path"
+    write_info_line 'Metadata' "$meta_path"
+  fi
 
   write_section "Rewriting history"
   local current_branch
@@ -1039,19 +1114,10 @@ main() {
   write_info_line 'Commits now' "$new_commit_count"
 
   local should_push=0
-  if [ "$PUSH_FORCE" -eq 1 ]; then
-    should_push=1
+  if [ "$NO_PUSH" -eq 1 ]; then
+    write_warn_line "Push skipped because --no-push was used."
   else
-    write_section "Push confirmation"
-    write_warn_line "This will push the rewritten history to GitHub using --force-with-lease."
-    local push_confirmation push_value
-    read -r -p 'Type YES to push now: ' push_confirmation
-    push_value="$(printf '%s' "$push_confirmation" | tr '[:lower:]' '[:upper:]')"
-    if [ "$push_value" = 'YES' ] || [ "$push_value" = 'Y' ]; then
-      should_push=1
-    else
-      write_warn_line "Push skipped."
-    fi
+    should_push=1
   fi
 
   local commit_web_url=''
@@ -1062,7 +1128,7 @@ main() {
     commit_web_url="${repo_url%/}/commit/$full_head"
   fi
 
-  if [ "$REMOVE_CLONE_ON_SUCCESS" -eq 1 ] && [ $should_push -eq 1 ]; then
+  if [ "$KEEP_CLONE" -ne 1 ] && [ $should_push -eq 1 ]; then
     cd "$original_pwd"
     rm -rf "$clone_path"
     write_success_line "Workspace clone removed."
@@ -1075,7 +1141,7 @@ main() {
   else
     write_info_line 'Commit URL' '(available after push)'
   fi
-  if ! { [ "$REMOVE_CLONE_ON_SUCCESS" -eq 1 ] && [ $should_push -eq 1 ]; }; then
+  if [ "$KEEP_CLONE" -eq 1 ] || [ $should_push -ne 1 ]; then
     write_info_line 'Workspace clone' "$clone_path"
   fi
 }
