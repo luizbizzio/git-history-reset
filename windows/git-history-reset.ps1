@@ -11,6 +11,10 @@ param(
     [switch]$Uninstall,
     [switch]$Yes,
     [switch]$DryRun,
+    [switch]$NoPush,
+    [switch]$KeepClone,
+    [switch]$NoBackup,
+    [switch]$FullHistoryBackup,
     [switch]$PushForce,
     [switch]$Sign,
     [switch]$NoSign,
@@ -604,6 +608,15 @@ function Try-CreateCommit {
     throw $text2
 }
 
+function New-CurrentSnapshotBackup {
+    param(
+        [Parameter(Mandatory = $true)][string]$GitPath,
+        [Parameter(Mandatory = $true)][string]$SnapshotPath
+    )
+
+    $null = Invoke-ToolCaptured -Path $GitPath -Args @('archive', '--format=zip', '--output', $SnapshotPath, 'HEAD') -NoOutput
+}
+
 $originalLocation = (Get-Location).Path
 
 try {
@@ -612,6 +625,15 @@ try {
     }
     if ($Sign -and $NoSign) {
         throw "Use either -Sign or -NoSign, not both."
+    }
+    if ($PushForce -and $NoPush) {
+        throw "Use either -PushForce or -NoPush, not both."
+    }
+    if ($RemoveCloneOnSuccess -and $KeepClone) {
+        throw "Use either -RemoveCloneOnSuccess or -KeepClone, not both."
+    }
+    if ($FullHistoryBackup -and $NoBackup) {
+        throw "Use either -FullHistoryBackup or -NoBackup, not both."
     }
 
     if ($Install) {
@@ -713,7 +735,13 @@ try {
     $cloneFolderName = ($fullName -replace '[^a-zA-Z0-9._-]', '-') + '-' + $timestamp
     $clonePath = Join-Path $clonesRoot $cloneFolderName
     $bundlePath = Join-Path $backupsRoot ($cloneFolderName + '.bundle')
+    $snapshotPath = Join-Path $backupsRoot ($cloneFolderName + '.zip')
     $metaPath = Join-Path $backupsRoot ($cloneFolderName + '.txt')
+    $cloneMode = if ($FullHistoryBackup) { 'full history' } else { 'current branch only' }
+    $backupMode = if ($NoBackup) { 'none' } elseif ($FullHistoryBackup) { 'full bundle' } else { 'current snapshot zip' }
+    $backupDisplay = if ($NoBackup) { 'none' } elseif ($FullHistoryBackup) { $bundlePath } else { $snapshotPath }
+    $pushMode = if ($NoPush) { 'no' } elseif ($PushForce) { 'yes (legacy flag)' } else { 'yes' }
+    $cleanupMode = if ($NoPush) { 'no' } elseif ($KeepClone) { 'no' } else { 'yes' }
 
     Write-Section "Plan"
     Write-InfoLine 'Repository' $fullName
@@ -722,15 +750,18 @@ try {
     Write-InfoLine 'Default branch' $defaultBranch
     Write-InfoLine 'Remote' $cloneUrl
     Write-InfoLine 'Clone path' $clonePath
-    Write-InfoLine 'Backup' $bundlePath
+    Write-InfoLine 'Clone mode' $cloneMode
+    Write-InfoLine 'Backup mode' $backupMode
+    Write-InfoLine 'Backup' $backupDisplay
     Write-InfoLine 'Commit message' $Message
     Write-InfoLine 'Dry run' ($(if ($DryRun) { 'yes' } else { 'no' }))
-    Write-InfoLine 'Push after reset' ($(if ($PushForce) { 'yes (automatic)' } else { 'ask for YES' }))
-    Write-InfoLine 'Cleanup clone' ($(if ($RemoveCloneOnSuccess) { 'yes' } else { 'no' }))
+    Write-InfoLine 'Push after reset' $pushMode
+    Write-InfoLine 'Cleanup clone' $cleanupMode
 
     Write-Host ""
-    Write-WarnLine "This script clones the selected repository into a dedicated workspace, rewrites its Git history into a single new commit, and can optionally push the rewritten history back to GitHub."
-    Write-WarnLine "GitHub issues, pull requests, releases, and other platform data are not deleted by this script."
+    Write-WarnLine "This script clones the selected repository into a dedicated workspace, rewrites its Git history into a single new commit, and pushes the rewritten branch back to GitHub by default."
+    Write-WarnLine "Default mode downloads only the current branch state. Use -FullHistoryBackup only when you really want a complete bundle backup."
+    Write-WarnLine "GitHub issues, pull requests, releases, tags, forks, and other platform data are not deleted by this script."
 
     if ($DryRun) {
         Write-SuccessLine "Dry run completed. Nothing was changed."
@@ -754,28 +785,56 @@ try {
     }
 
     Write-Section "Cloning repository"
-    With-GitPromptDisabled {
-        $null = Invoke-ToolLive -Path $ghPath -Args @('repo', 'clone', $fullName, $clonePath)
+    if ($FullHistoryBackup) {
+        With-GitPromptDisabled {
+            $null = Invoke-ToolLive -Path $ghPath -Args @('repo', 'clone', $fullName, $clonePath)
+        }
+    }
+    else {
+        if (-not $defaultBranch -or $defaultBranch -eq '-') {
+            throw "Could not determine the default branch required for current-branch clone mode."
+        }
+        With-GitPromptDisabled {
+            $null = Invoke-ToolLive -Path $gitPath -Args @('clone', '--depth', '1', '--single-branch', '--branch', $defaultBranch, $cloneUrl, $clonePath)
+        }
     }
     Write-SuccessLine "Clone completed."
 
     Set-Location $clonePath
 
-    Write-Section "Creating backup"
-    $headBeforeResult = Invoke-ToolCaptured -Path $gitPath -Args @('rev-parse', 'HEAD') -AllowFailure
-    $headBefore = ($headBeforeResult.Output -join "`n").Trim()
-    $null = Invoke-ToolCaptured -Path $gitPath -Args @('bundle', 'create', $bundlePath, '--all') -NoOutput
-    @(
-        "repo_name=$repoName"
-        "full_name=$fullName"
-        "default_branch=$defaultBranch"
-        "remote_url=$cloneUrl"
-        "old_head=$headBefore"
-        "created_at=$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))"
-    ) | Set-Content -Path $metaPath -Encoding UTF8
-    Write-SuccessLine "Backup created."
-    Write-InfoLine 'Bundle' $bundlePath
-    Write-InfoLine 'Metadata' $metaPath
+    if ($NoBackup) {
+        Write-Section "Skipping backup"
+        Write-WarnLine "Backup skipped because -NoBackup was used."
+    }
+    else {
+        Write-Section "Creating backup"
+        $headBeforeResult = Invoke-ToolCaptured -Path $gitPath -Args @('rev-parse', 'HEAD') -AllowFailure
+        $headBefore = ($headBeforeResult.Output -join "`n").Trim()
+        if ($FullHistoryBackup) {
+            $null = Invoke-ToolCaptured -Path $gitPath -Args @('bundle', 'create', $bundlePath, '--all') -NoOutput
+        }
+        else {
+            New-CurrentSnapshotBackup -GitPath $gitPath -SnapshotPath $snapshotPath
+        }
+        @(
+            "repo_name=$repoName"
+            "full_name=$fullName"
+            "default_branch=$defaultBranch"
+            "remote_url=$cloneUrl"
+            "old_head=$headBefore"
+            "clone_mode=$cloneMode"
+            "backup_type=$backupMode"
+            "created_at=$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))"
+        ) | Set-Content -Path $metaPath -Encoding UTF8
+        Write-SuccessLine "Backup created."
+        if ($FullHistoryBackup) {
+            Write-InfoLine 'Bundle' $bundlePath
+        }
+        else {
+            Write-InfoLine 'Snapshot' $snapshotPath
+        }
+        Write-InfoLine 'Metadata' $metaPath
+    }
 
     Write-Section "Rewriting history"
     $currentBranchResult = Invoke-ToolCaptured -Path $gitPath -Args @('branch', '--show-current')
@@ -876,25 +935,10 @@ try {
     $repoWebUrl = $repoUrl
     $commitWebUrl = $null
 
-    $shouldPush = $false
-    if ($PushForce) {
-        $shouldPush = $true
-    }
-    else {
-        Write-Section "Push confirmation"
-        Write-WarnLine "This will push the rewritten history to GitHub using --force-with-lease."
-        $pushConfirmation = Read-Host "Type YES to push now"
-        $pushValue = $pushConfirmation.ToUpperInvariant()
-        if ($pushValue -eq 'YES' -or $pushValue -eq 'Y') {
-            $shouldPush = $true
-        }
-        else {
-            Write-WarnLine "Push skipped."
-        }
-    }
-
+    $shouldPush = -not $NoPush
     if ($shouldPush) {
         Write-Section "Pushing rewritten history"
+        Write-WarnLine "Pushing rewritten history to GitHub using --force-with-lease."
         With-GitPromptDisabled {
             $null = Invoke-ToolLive -Path $gitPath -Args @('push', 'origin', $currentBranch, '--force-with-lease')
         }
@@ -903,8 +947,12 @@ try {
             $commitWebUrl = $repoWebUrl.TrimEnd('/') + '/commit/' + $fullHead
         }
     }
+    else {
+        Write-WarnLine "Push skipped because -NoPush was used."
+    }
 
-    if ($RemoveCloneOnSuccess -and $shouldPush) {
+    $shouldCleanupClone = $shouldPush -and -not $KeepClone
+    if ($shouldCleanupClone) {
         Set-Location $originalLocation
         if (Test-Path $clonePath) {
             Remove-Item -Path $clonePath -Recurse -Force -ErrorAction SilentlyContinue
@@ -922,7 +970,7 @@ try {
     else {
         Write-InfoLine 'Commit URL' '(available after push)'
     }
-    if (-not ($RemoveCloneOnSuccess -and $shouldPush)) {
+    if (-not $shouldCleanupClone) {
         Write-InfoLine 'Workspace clone' $clonePath
     }
 }
