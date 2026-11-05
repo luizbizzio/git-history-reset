@@ -5,6 +5,7 @@ WORKSPACE_ROOT="${HOME}/git-history-reset-workspace"
 INSTALL_ROOT="${HOME}/.local/share/git-history-reset"
 BIN_ROOT="${HOME}/.local/bin"
 MESSAGE="Initial commit"
+MESSAGE_PROVIDED=0
 FILTER=""
 SOURCE_URL=""
 INSTALL=0
@@ -739,6 +740,7 @@ parse_args() {
       --message)
         shift
         MESSAGE="$1"
+        MESSAGE_PROVIDED=1
         ;;
       --filter)
         shift
@@ -913,6 +915,21 @@ main() {
   local selection
   selection="$(read_repo_selection "${#names[@]}")"
   local idx=$((selection - 1))
+
+  if [ "$MESSAGE_PROVIDED" -eq 0 ]; then
+    local typed_message
+    if ! IFS= read -r -p "Commit message (default: $MESSAGE): " typed_message; then
+      write_error_line "Could not read the commit message."
+      exit 1
+    fi
+    if [ -n "$(trim "$typed_message")" ]; then
+      MESSAGE="$(trim "$typed_message")"
+    fi
+  fi
+  if [ -z "$(trim "$MESSAGE")" ]; then
+    write_error_line "Commit message cannot be empty."
+    exit 1
+  fi
 
   local full_name="${names[$idx]}"
   local visibility="${visibilities[$idx]}"
