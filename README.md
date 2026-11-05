@@ -19,6 +19,7 @@ Use it when you want to:
 - Clones only the selected branch by default, using shallow history
 - Creates a `.zip` snapshot backup of the current files by default
 - Rebuilds history as a single new commit
+- Asks for a commit message, using `Initial commit` when left blank
 - Pushes the rewritten branch automatically with `--force-with-lease`
 - Removes the temporary clone after a successful push
 - Supports optional signed commits, depending on your local Git setup
@@ -122,6 +123,24 @@ ghr --uninstall
 
 ```bash
 ghr
+```
+
+### Choose the commit message
+
+After selecting a repository, type the message for the new commit or press Enter to use `Initial commit`.
+
+You can also set the message directly from the command line. In this case, the tool skips the message question.
+
+Windows:
+
+```powershell
+ghr -Message "Initial release"
+```
+
+Linux:
+
+```bash
+ghr --message "Initial release"
 ```
 
 ### Test without pushing
@@ -229,11 +248,12 @@ ghr --filter repo_name
 1. Checks Git and GitHub CLI
 2. Reads your authenticated GitHub account
 3. Lists repositories in an alphabetical view
-4. Clones only the selected branch with shallow history by default
-5. Creates a `.zip` snapshot backup of the current files
-6. Rewrites the history into one new commit
-7. Pushes the result to GitHub with `--force-with-lease`
-8. Removes the temporary clone after a successful push
+4. Asks for the new commit message (unless provided in a command-line option)
+5. Clones only the selected branch with shallow history by default
+6. Creates a `.zip` snapshot backup of the current files
+7. Rewrites the history into one new commit
+8. Pushes the result to GitHub with `--force-with-lease`
+9. Removes the temporary clone after a successful push
 
 ## Confirmation
 
