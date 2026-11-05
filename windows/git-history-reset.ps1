@@ -705,6 +705,17 @@ try {
     $selection = Read-RepoSelection -Max $repos.Count
     $repo = $repos[$selection - 1]
 
+    if (-not $PSBoundParameters.ContainsKey('Message')) {
+        Write-Host ""
+        $typedMessage = Read-Host "Commit message (default: $Message)"
+        if (-not [string]::IsNullOrWhiteSpace($typedMessage)) {
+            $Message = $typedMessage.Trim()
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        throw "Commit message cannot be empty."
+    }
+
     $repoName = [string]$repo.name
     $fullName = [string]$repo.nameWithOwner
     $defaultBranch = '-'
