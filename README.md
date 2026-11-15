@@ -2,6 +2,10 @@
 
 <p align="center">Reset a repository history into a single fresh commit, with GitHub repo selection, snapshot backup, and automatic push.</p>
 
+<p align="center">
+  <img src="assets/git-history-reset-example.png" alt="Git History Reset Example" width="1000"/>
+</p>
+
 Works on **Windows** and **Linux**.
 Use it when you want to:
 
